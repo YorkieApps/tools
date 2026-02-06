@@ -146,7 +146,8 @@ const downloadZip = async () => {
       // Create download link
       const link = document.createElement('a')
       link.href = URL.createObjectURL(content)
-      link.download = `html_links_${new Date().getTime()}.zip`
+      const dateStr = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+      link.download = `html_links_${dateStr}.zip`
       link.click()
       
       setStatus(`成功！已下载 ${successCount} 个页面${failCount > 0 ? `，${failCount} 个失败` : ''}`, 'success')
