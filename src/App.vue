@@ -4,6 +4,16 @@
     <p class="description">输入多个链接（每行一个），下载这些链接的 HTML 内容到一个 ZIP 文件中。</p>
     
     <div class="form-group">
+      <label for="proxy">代理服务（解决跨域问题）：</label>
+      <select id="proxy" v-model="selectedProxy">
+        <option v-for="service in proxyServices" :key="service.name" :value="service.url">
+          {{ service.name }}
+        </option>
+      </select>
+      <p class="hint">如果下载失败，请尝试切换不同的代理服务。</p>
+    </div>
+
+    <div class="form-group">
       <label for="urls">链接列表：</label>
       <textarea 
         id="urls"
@@ -13,10 +23,38 @@
     </div>
 
     <div class="actions">
-      <button @click="downloadZip" :disabled="isLoading || !urlsText.trim()">
-        <span v-if="!isLoading">下载 ZIP</span>
+      <button @click="generateZip" :disabled="isLoading || !urlsText.trim()">
+        <span v-if="!isLoading">生成 ZIP</span>
         <span v-else>处理中... ({{ progress.current }}/{{ progress.total }})</span>
       </button>
+
+      <a 
+        v-if="downloadUrl" 
+        :href="downloadUrl" 
+        :download="downloadFilename" 
+        class="download-btn"
+        @click="addLog('✓ 已开始下载文件', 'success')"
+      >
+        点击下载 {{ downloadFilename }}
+      </a>
+    </div>
+
+    <div v-if="isLoading && progress.total > 0" class="progress-container">
+      <div 
+        class="progress-bar" 
+        :style="{ width: `${(progress.current / progress.total) * 100}%` }"
+      ></div>
+    </div>
+
+    <div v-if="isLoading" class="file-progress">
+      <div v-if="currentFileProgress.loaded > 0" class="file-progress-text">
+        <span v-if="currentFileProgress.total > 0">
+          正在下载当前文件: {{ currentFileProgress.percent }}% ({{ formatBytes(currentFileProgress.loaded) }} / {{ formatBytes(currentFileProgress.total) }})
+        </span>
+        <span v-else>
+          正在下载当前文件: {{ formatBytes(currentFileProgress.loaded) }}
+        </span>
+      </div>
     </div>
 
     <div v-if="statusMessage" class="status" :class="statusType">
@@ -42,6 +80,25 @@ const statusMessage = ref('')
 const statusType = ref('')
 const logs = ref([])
 const progress = ref({ current: 0, total: 0 })
+const currentFileProgress = ref({ loaded: 0, total: 0, percent: 0 })
+const downloadUrl = ref(null)
+const downloadFilename = ref('')
+
+const proxyServices = [
+  { name: 'CORS Proxy.io (推荐)', url: 'https://corsproxy.io/?' },
+  { name: 'AllOrigins', url: 'https://api.allorigins.win/raw?url=' },
+  { name: 'ThingProxy', url: 'https://thingproxy.freeboard.io/fetch/' },
+  { name: '不使用代理 (直连)', url: '' }
+]
+const selectedProxy = ref(proxyServices[0].url)
+
+const formatBytes = (bytes) => {
+  if (bytes === 0) return '0 B'
+  const k = 1024
+  const sizes = ['B', 'KB', 'MB', 'GB']
+  const i = Math.floor(Math.log(bytes) / Math.log(k))
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
+}
 
 const addLog = (message, type = 'info') => {
   logs.value.push({ message, type })
@@ -52,30 +109,60 @@ const setStatus = (message, type = 'info') => {
   statusType.value = type
 }
 
-const fetchHtmlContent = async (url) => {
-  return new Promise((resolve, reject) => {
-    const callbackName = `jsonp_callback_${Date.now()}_${Math.floor(Math.random() * 100000)}`
+const fetchHtmlContent = async (url, onProgress) => {
+  // 使用选定的代理服务
+  // 如果选择了空字符串，则尝试直连（可能会跨域失败）
+  let targetUrl = url
+  if (selectedProxy.value) {
+    // 处理 corsproxy.io 的特殊情况，它直接拼接 url，而其他通常是 ?url= 参数
+    // 但 corsproxy.io/?url 也是支持的，所以统一处理
+    // 注意：corsproxy.io 需要对 url 进行编码吗？
+    // 官方示例是 https://corsproxy.io/?https%3A%2F%2Fgoogle.com
+    // 所以统一使用 encodeURIComponent 是安全的
+    targetUrl = `${selectedProxy.value}${encodeURIComponent(url)}`
     
-    window[callbackName] = (data) => {
-      delete window[callbackName]
-      document.body.removeChild(script)
-      if (data && data.contents) {
-        resolve(data.contents)
-      } else {
-        reject(new Error('No content received'))
+    // 特殊修正：corsproxy.io 实际上支持不编码直接拼接，但也支持编码
+    // 如果是 corsproxy.io，我们尝试使用 encodeURIComponent
+  }
+  
+  try {
+    const response = await fetch(targetUrl)
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`)
+    }
+
+    if (!response.body) {
+      return await response.text()
+    }
+
+    const reader = response.body.getReader()
+    const contentLength = +response.headers.get('Content-Length')
+    let receivedLength = 0
+    let chunks = []
+
+    while(true) {
+      const {done, value} = await reader.read()
+      if (done) break
+      
+      chunks.push(value)
+      receivedLength += value.length
+      
+      if (onProgress) {
+        onProgress(receivedLength, contentLength)
       }
     }
 
-    const script = document.createElement('script')
-    script.src = `https://api.allorigins.win/get?url=${encodeURIComponent(url)}&callback=${callbackName}`
-    script.onerror = () => {
-      delete window[callbackName]
-      document.body.removeChild(script)
-      reject(new Error('Cross-domain request failed via script tag'))
+    const chunksAll = new Uint8Array(receivedLength)
+    let position = 0
+    for(let chunk of chunks) {
+      chunksAll.set(chunk, position)
+      position += chunk.length
     }
-    
-    document.body.appendChild(script)
-  })
+
+    return new TextDecoder("utf-8").decode(chunksAll)
+  } catch (error) {
+    throw new Error(`代理请求失败: ${error.message}`)
+  }
 }
 
 const getFilenameFromUrl = (url) => {
@@ -92,7 +179,13 @@ const getFilenameFromUrl = (url) => {
   }
 }
 
-const downloadZip = async () => {
+const generateZip = async () => {
+  if (downloadUrl.value) {
+    URL.revokeObjectURL(downloadUrl.value)
+    downloadUrl.value = null
+    downloadFilename.value = ''
+  }
+
   const urls = urlsText.value
     .split('\n')
     .map(url => url.trim())
@@ -118,7 +211,16 @@ const downloadZip = async () => {
     
     try {
       addLog(`正在获取: ${url}`, 'info')
-      const html = await fetchHtmlContent(url)
+      currentFileProgress.value = { loaded: 0, total: 0, percent: 0 }
+      
+      const html = await fetchHtmlContent(url, (loaded, total) => {
+        let percent = 0
+        if (total > 0) {
+          percent = Math.floor((loaded / total) * 100)
+        }
+        currentFileProgress.value = { loaded, total, percent }
+      })
+      
       const filename = getFilenameFromUrl(url)
       zip.file(filename, html)
       successCount++
@@ -134,15 +236,12 @@ const downloadZip = async () => {
       addLog('正在生成 ZIP 文件...', 'info')
       const content = await zip.generateAsync({ type: 'blob' })
       
-      // Create download link
-      const link = document.createElement('a')
-      link.href = URL.createObjectURL(content)
       const dateStr = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
-      link.download = `html_links_${dateStr}.zip`
-      link.click()
+      downloadFilename.value = `html_links_${dateStr}.zip`
+      downloadUrl.value = URL.createObjectURL(content)
       
-      setStatus(`成功！已下载 ${successCount} 个页面${failCount > 0 ? `，${failCount} 个失败` : ''}`, 'success')
-      addLog('✓ ZIP 文件已生成并开始下载', 'success')
+      setStatus(`生成成功！已准备好下载链接（${successCount} 个页面${failCount > 0 ? `，${failCount} 个失败` : ''}）`, 'success')
+      addLog('✓ ZIP 文件生成成功，请点击下载按钮', 'success')
     } catch (error) {
       setStatus('生成 ZIP 文件失败: ' + error.message, 'error')
       addLog(`✗ ZIP 生成失败: ${error.message}`, 'error')
@@ -197,8 +296,55 @@ label {
   height: 18px;
 }
 
+select {
+  width: 100%;
+  padding: 8px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 1em;
+  background-color: white;
+  margin-bottom: 5px;
+}
+
+.hint {
+  font-size: 0.85em;
+  color: #888;
+  margin: 0;
+}
+
 .actions {
   margin-bottom: 20px;
+}
+
+.download-btn {
+  display: inline-block;
+  padding: 8px 16px;
+  background-color: #28a745;
+  color: white;
+  text-decoration: none;
+  border-radius: 4px;
+  margin-left: 10px;
+  font-size: 0.9em;
+  transition: background-color 0.2s;
+}
+
+.download-btn:hover {
+  background-color: #218838;
+}
+
+.file-progress {
+  margin-top: -15px;
+  margin-bottom: 20px;
+  text-align: center;
+  font-size: 0.9em;
+  color: #666;
+}
+
+.file-progress-text {
+  background-color: #f8f9fa;
+  padding: 4px 8px;
+  border-radius: 4px;
+  display: inline-block;
 }
 
 .status {
@@ -261,6 +407,21 @@ label {
   color: #721c24;
 }
 
+.progress-container {
+  width: 100%;
+  height: 10px;
+  background-color: #e9ecef;
+  border-radius: 5px;
+  margin-bottom: 20px;
+  overflow: hidden;
+}
+
+.progress-bar {
+  height: 100%;
+  background-color: #28a745;
+  transition: width 0.3s ease;
+}
+
 @media (prefers-color-scheme: dark) {
   h1 {
     color: #fff;
@@ -307,6 +468,20 @@ label {
   
   .logs {
     border-top-color: #444;
+  }
+
+  .progress-container {
+    background-color: #444;
+  }
+  
+  .progress-bar {
+    background-color: #2ea043;
+  }
+  
+  select {
+    background-color: #333;
+    color: #eee;
+    border-color: #555;
   }
 }
 </style>
