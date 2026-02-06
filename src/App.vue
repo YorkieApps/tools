@@ -12,13 +12,6 @@
       ></textarea>
     </div>
 
-    <div class="options">
-      <label>
-        <input type="checkbox" v-model="useProxy" />
-        使用 CORS 代理（如果直接访问失败）
-      </label>
-    </div>
-
     <div class="actions">
       <button @click="downloadZip" :disabled="isLoading || !urlsText.trim()">
         <span v-if="!isLoading">下载 ZIP</span>
@@ -49,7 +42,6 @@ const statusMessage = ref('')
 const statusType = ref('')
 const logs = ref([])
 const progress = ref({ current: 0, total: 0 })
-const useProxy = ref(false)
 
 const addLog = (message, type = 'info') => {
   logs.value.push({ message, type })
@@ -61,30 +53,29 @@ const setStatus = (message, type = 'info') => {
 }
 
 const fetchHtmlContent = async (url) => {
-  try {
-    // Try direct fetch first
-    let fetchUrl = url
-    if (useProxy.value) {
-      // Use a CORS proxy service
-      fetchUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`
-    }
+  return new Promise((resolve, reject) => {
+    const callbackName = `jsonp_callback_${Date.now()}_${Math.floor(Math.random() * 100000)}`
     
-    const response = await fetch(fetchUrl, {
-      method: 'GET',
-      headers: {
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+    window[callbackName] = (data) => {
+      delete window[callbackName]
+      document.body.removeChild(script)
+      if (data && data.contents) {
+        resolve(data.contents)
+      } else {
+        reject(new Error('No content received'))
       }
-    })
-    
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`)
+    }
+
+    const script = document.createElement('script')
+    script.src = `https://api.allorigins.win/get?url=${encodeURIComponent(url)}&callback=${callbackName}`
+    script.onerror = () => {
+      delete window[callbackName]
+      document.body.removeChild(script)
+      reject(new Error('Cross-domain request failed via script tag'))
     }
     
-    const html = await response.text()
-    return html
-  } catch (error) {
-    throw new Error(`获取失败: ${error.message}`)
-  }
+    document.body.appendChild(script)
+  })
 }
 
 const getFilenameFromUrl = (url) => {
@@ -157,7 +148,7 @@ const downloadZip = async () => {
       addLog(`✗ ZIP 生成失败: ${error.message}`, 'error')
     }
   } else {
-    setStatus('所有链接都获取失败，请检查链接或尝试使用 CORS 代理', 'error')
+    setStatus('所有链接都获取失败，请检查链接', 'error')
   }
 
   isLoading.value = false
