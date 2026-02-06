@@ -1,0 +1,28 @@
+{
+  "name": "tools",
+  "version": "1.0.0",
+  "description": "A web-based tool to download HTML content from URLs as a zip file",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/YorkieApps/tools.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/YorkieApps/tools/issues"
+  },
+  "homepage": "https://github.com/YorkieApps/tools#readme",
+  "dependencies": {
+    "@vitejs/plugin-vue": "^6.0.4",
+    "jszip": "^3.10.1",
+    "vite": "^7.3.1",
+    "vue": "^3.5.27"
+  }
+}
